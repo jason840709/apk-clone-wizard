@@ -30,7 +30,8 @@ from pathlib import Path
 # ------------------------------------------------------------------
 HERE = Path(__file__).resolve().parent
 MAKER = HERE / "apk_clone_maker.py"
-BUNDLED_APKTOOL = HERE / "apktool-cli-2.11.1.jar"
+LOCAL_ENV = HERE / ".local-env/runtime"
+BUNDLED_APKTOOL = LOCAL_ENV / "apktool.jar" if (LOCAL_ENV / "apktool.jar").is_file() else HERE / "apktool-cli-2.11.1.jar"
 
 
 def print_banner():

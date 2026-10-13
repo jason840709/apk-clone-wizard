@@ -1,5 +1,6 @@
 {
-  "android_sdk": "~/Library/Android/sdk",
-  "apktool": "/path/to/apktool_2.11.1.jar",
+  "android_sdk": ".local-env/runtime/android-sdk",
+  "apktool": ".local-env/runtime/apktool.jar",
+  "java_home": ".local-env/runtime/jdk/Contents/Home",
   "build_tools_version": "36.0.0"
 }

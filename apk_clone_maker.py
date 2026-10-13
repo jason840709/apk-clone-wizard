@@ -127,11 +127,15 @@ def apktool_command(apktool: Path, java: Path) -> list[str]:
 
 def decode_apk(apk: Path, project: Path, apktool: Path, java: Path) -> None:
     cmd = apktool_command(apktool, java) + ["d", "-f", str(apk), "-o", str(project)]
+    if os.environ.get("APKTOOL_FRAMEWORK_DIR"):
+        cmd += ["-p", os.environ["APKTOOL_FRAMEWORK_DIR"]]
     run(cmd)
 
 
 def build_apk(project: Path, unsigned_apk: Path, apktool: Path, java: Path) -> None:
     cmd = apktool_command(apktool, java) + ["b", str(project), "-o", str(unsigned_apk)]
+    if os.environ.get("APKTOOL_FRAMEWORK_DIR"):
+        cmd += ["-p", os.environ["APKTOOL_FRAMEWORK_DIR"]]
     run(cmd)
 
 
@@ -438,11 +442,18 @@ def main() -> int:
         shutil.rmtree(work_root)
     work_root.mkdir(parents=True)
 
+    local = Path(__file__).resolve().parent / ".local-env/runtime"
+    if (local / "jdk/Contents/Home/bin/java").is_file():
+        os.environ["PATH"] = str(local / "jdk/Contents/Home/bin") + os.pathsep + os.environ.get("PATH", "")
+    if (local / "android-sdk").is_dir():
+        os.environ.setdefault("ANDROID_SDK_ROOT", str(local / "android-sdk"))
+    if local.is_dir():
+        os.environ.setdefault("APKTOOL_FRAMEWORK_DIR", str(local.parent / "apktool-framework"))
     java = find_executable(None, "java")
     keytool = find_executable(None, "keytool")
     sdk_env = args.android_sdk or os.environ.get("ANDROID_SDK_ROOT") or os.environ.get("ANDROID_HOME")
     sdk_root = Path(sdk_env).expanduser().resolve() if sdk_env else None
-    apktool = Path(args.apktool).expanduser().resolve() if args.apktool else None
+    apktool = Path(args.apktool).expanduser().resolve() if args.apktool else (local / "apktool.jar" if (local / "apktool.jar").is_file() else None)
     if not apktool:
         found = shutil.which("apktool")
         if found:

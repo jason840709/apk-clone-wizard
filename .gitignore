@@ -31,3 +31,6 @@ tools.local.json
 work/
 build/
 dist/
+
+# Folder-local third-party runtimes and downloads
+.local-env/

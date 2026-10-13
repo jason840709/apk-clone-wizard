@@ -4,9 +4,10 @@ set -eu
 cd -- "${0:A:h}"
 WIZARD_ROOT="$PWD"
 export PATH="/Library/Frameworks/Python.framework/Versions/Current/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:$PATH"
+source "$WIZARD_ROOT/本機環境.zsh"
 WIZARD_PYTHON="$(command -v python3 || true)"
-if [[ -z "$WIZARD_PYTHON" ]]; then
-  print '找不到 Python 3，請先安裝 Python 3。'; read '?按 Return 關閉。'; exit 1
+if [[ -z "$WIZARD_PYTHON" ]] || ! "$WIZARD_PYTHON" -c 'import sys; assert sys.version_info >= (3,10)' >/dev/null 2>&1; then
+  print '請先雙擊「安裝本機環境.command」安裝 Python 3.10 以上版本。'; read '?按 Return 關閉。'; exit 1
 fi
 WIZARD_CACHE="$WIZARD_ROOT/03-精靈快取"
 WIZARD_APP="$WIZARD_CACHE/APK分身精靈.app"
@@ -14,6 +15,10 @@ WIZARD_SOURCE="$WIZARD_ROOT/CloneWizard.swift"
 mkdir -p "$WIZARD_APP/Contents/MacOS"
 WIZARD_HASH="$(/usr/bin/shasum -a 256 "$WIZARD_SOURCE" | /usr/bin/cut -d ' ' -f 1)"
 if [[ ! -x "$WIZARD_APP/Contents/MacOS/CloneWizard" || ! -f "$WIZARD_CACHE/source.sha256" || "$(< "$WIZARD_CACHE/source.sha256")" != "$WIZARD_HASH" ]]; then
+  if ! /usr/bin/xcode-select -p >/dev/null 2>&1; then
+    print '原生視窗需要 Apple Command Line Tools。你也可使用「啟動終端分身精靈.command」，無需 Apple 編譯環境。'
+    exit 1
+  fi
   print '首次啟動正在編譯 macOS 視窗，之後會直接開啟。'
   (
   WIZARD_BUILD_TEMP="$WIZARD_CACHE/編譯暫存"

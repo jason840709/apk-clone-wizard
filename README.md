@@ -4,24 +4,35 @@
 
 本儲存庫提供程式原始碼，不包含任何原始／分身 APK、第三方工具二進位檔、簽章金鑰或個人電腦設定。
 
-## 安裝
+## 資料夾內安裝環境
 
-- 原生視窗：macOS 14 或更新版本，Xcode Command Line Tools（`xcode-select --install`）。
-- Python 3.10 或更新版本；不需要安裝第三方 Python 套件。
-- Java JDK（可選用 [Eclipse Temurin](https://adoptium.net/)）。
-- [Apktool](https://apktool.org/docs/2.x/install/)；原始版本使用 2.11.1，更新版本請自行驗證相容性。
-- [Android SDK Build Tools](https://developer.android.com/tools/releases/build-tools)，需有 `aapt2`、`zipalign` 及 `lib/apksigner.jar`。
-
-工具請從官方來源自行安裝，依官方授權條款使用。本專案不會自動下載或代為接受 SDK 條款。
+下載本專案後，先雙擊 **「安裝本機環境.command」**，再雙擊 **「啟動APK分身精靈.command」**。若 macOS 提示檔案沒有執行權限，可在終端機執行：
 
 ```sh
-export ANDROID_SDK_ROOT="$HOME/Library/Android/sdk"
-export APKTOOL_PATH="/path/to/apktool_2.11.1.jar"
-chmod +x ./啟動APK分身精靈.command
-./啟動APK分身精靈.command
+chmod +x ./*.command
+./安裝本機環境.command
 ```
 
-也可以複製 `tools.example.json` 為 `tools.local.json`，填入自己的路徑。此檔案會被 Git 忽略。若 `apktool` 已在 PATH，可不設定 `APKTOOL_PATH`；原生後端預設選用 SDK 中版本最高的 Build Tools，也可在設定檔固定版本。
+安裝器支援 macOS 14 以上的 Apple Silicon 與 Intel Mac，會依 CPU 架構從上游官方發行來源下載 Python、Eclipse Temurin JDK、Apktool 與 Android SDK Build Tools，並驗證 `environment.lock.json` 固定的 SHA-256。Python／JDK 版本及下載來源可在該檔查閱。
+
+所有下載、工具、授權紀錄與快取都放在專案的 `.local-env/` 內，不使用 sudo、Homebrew、系統安裝程式，不修改 shell 設定檔或系統 PATH。啟動入口只在自己的程序套用本機路徑，不影響其他軟體。移動整個專案資料夾後仍會使用相對位置；不同 CPU 架構需重新安裝。
+
+**下載的工具與其相依元件之著作權屬各自原作者及權利人，不是本專案作者的著作，也不會因本專案的授權而改變。** 詳細來源與條款見 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)；下載套件原附的 LICENSE／NOTICE 會保留。發布到 GitHub 的是下載腳本與固定版本資料，沒有把工具二進位檔或你的安裝快取上傳。
+
+Android SDK Build Tools 依 [Google SDK 授權條款](https://developer.android.com/studio/terms) 使用。安裝器會展示官方索引中的完整授權文字，要求你輸入「我同意」才安裝；不同意就取消。此動作只表示你對 Google 條款的同意，不是把 Google 工具授權改成屬於本專案。
+
+原生視窗首次編譯需要已安裝的 **Apple Xcode Command Line Tools**。這是系統層級的 Apple 工具，無法由本腳本在專案內安裝；腳本不會自動安裝它。沒有 Apple 編譯工具時，仍可雙擊 **「啟動終端分身精靈.command」**，使用資料夾內的 Python 與 APK 工具，無需安裝 Apple 編譯環境。
+
+若下載中斷，重新執行會驗證並重用已完成的下載。完整環境會先在專案內的暫存資料夾準備，再替換舊環境；下載或驗證失敗不會先刪除舊環境。`tools.local.json` 的既有手動設定不會被安裝器覆蓋。
+
+```sh
+./安裝本機環境.command --check         # 檢查目前環境，不下載
+./安裝本機環境.command --download-only # 只下載並校驗，不接受 SDK 條款或安裝
+```
+
+要移除環境，只需刪除 `.local-env/`；這不會刪除 `06-精靈私有簽章/` 中的金鑰，請另行安全備份金鑰。首次下載約數百 MB，解壓後需約 1 GB 可用空間。
+
+若你已有自己的工具，也可複製 `tools.example.json` 為 `tools.local.json`，填入自己的 SDK、Apktool 與 `java_home` 路徑，或設定 `ANDROID_SDK_ROOT`、`APKTOOL_PATH`。相對路徑以專案資料夾為準，本機設定檔會被 Git 忽略。Python 不需要安裝第三方 pip 套件。
 
 ## 使用
 
@@ -41,18 +52,18 @@ chmod +x ./啟動APK分身精靈.command
 命令列可用互動式入口：
 
 ```sh
-python3 '分身精靈 [終端機運行].py'
+./啟動終端分身精靈.command
 ```
 
 或直接使用引擎（此入口的預設套件格式是 `.clone1`，與原生視窗的 `clone1` 不同；要更新請固定模板）：
 
 ```sh
-python3 apk_clone_maker.py \
+./.local-env/runtime/python/bin/python3 apk_clone_maker.py \
   --apk /path/to/authorized.apk \
   --output-dir ./01-輸出/example \
   --numbers 1,2 \
-  --apktool /path/to/apktool_2.11.1.jar \
-  --android-sdk "$ANDROID_SDK_ROOT"
+  --apktool ./.local-env/runtime/apktool.jar \
+  --android-sdk ./.local-env/runtime/android-sdk
 ```
 
 舊版命令列入口使用測試簽章密碼，部分工具參數與命令會顯示在終端機；處理正式私有簽章請優先使用原生視窗的密碼檔流程，不要分享命令列記錄。
@@ -68,7 +79,9 @@ python3 apk_clone_maker.py \
 ## 驗證
 
 ```sh
-python3 -B test_bridge.py
+./.local-env/runtime/python/bin/python3 -B test_bridge.py
+./.local-env/runtime/python/bin/python3 -B test_local_environment.py
+./.local-env/runtime/python/bin/python3 -B test_installer.py
 ./啟動APK分身精靈.command --compile-only
 ./啟動APK分身精靈.command --self-test
 ```

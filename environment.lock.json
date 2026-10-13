@@ -1,0 +1,43 @@
+{
+  "schema": 1,
+  "android_build_tools_version": "36.0.0",
+  "architectures": {
+    "arm64": {
+      "python": {
+        "url": "https://github.com/astral-sh/python-build-standalone/releases/download/20261009/cpython-3.12.15%2B20261009-aarch64-apple-darwin-install_only_stripped.tar.gz",
+        "sha256": "233f8e15255b3e1d1fd47ea5dd5230dfed803f371138e896e54d98c60ae19f6f",
+        "version": "3.12.15"
+      },
+      "jdk": {
+        "url": "https://github.com/adoptium/temurin21-binaries/releases/download/jdk-21.0.12.1%2B1/OpenJDK21U-jdk_aarch64_mac_hotspot_21.0.12.1_1.tar.gz",
+        "sha256": "3623232f33a9c3baadf304480b2535f9a3cba8a58d42ecbb438ba267315d9998",
+        "version": "21.0.12+101.0.LTS"
+      }
+    },
+    "x86_64": {
+      "python": {
+        "url": "https://github.com/astral-sh/python-build-standalone/releases/download/20261009/cpython-3.12.15%2B20261009-x86_64-apple-darwin-install_only_stripped.tar.gz",
+        "sha256": "fb3187d95334813b88940db0f1ca57b84cedfd552739c3a5771c3ea0e49988c9",
+        "version": "3.12.15"
+      },
+      "jdk": {
+        "url": "https://github.com/adoptium/temurin21-binaries/releases/download/jdk-21.0.12.1%2B1/OpenJDK21U-jdk_x64_mac_hotspot_21.0.12.1_1.tar.gz",
+        "sha256": "44db0f08196daf19a47f90d13388b0c943b67663cb537f998fe29e836fa842ce",
+        "version": "21.0.12+101.0.LTS"
+      }
+    }
+  },
+  "apktool": {
+    "version": "2.11.1",
+    "url": "https://github.com/iBotPeaches/Apktool/releases/download/v2.11.1/apktool_2.11.1.jar",
+    "sha256": "56d59c524fc764263ba8d345754d8daf55b1887818b15cd3b594f555d249e2db",
+    "checksum_source": "SHA-256 computed from the official release asset; this older release does not publish an asset digest in the GitHub API."
+  },
+  "android": {
+    "url": "https://dl.google.com/android/repository/build-tools_r36_macosx.zip",
+    "sha256": "04e7f3a72044de4926fa038fa0e251a37bba1e1c3fb8beab6f8401bfd9eb4bf3",
+    "official_sha1": "199ae0047ee61e842f8ee0c6d3918e44fb9a1f83",
+    "checksum_source": "Official Google repository2-1.xml SHA-1 verified; SHA-256 additionally computed from that asset.",
+    "license_sha256": "1f8729233617b193fd619213792ae16a41b95d2bbbf525dfe66998252ba68b16"
+  }
+}

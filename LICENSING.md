@@ -7,3 +7,5 @@
 本次新增的 README、第三方來源說明、本機設定範例與忽略規則僅用於說明及管理本次發布；不因此改變上述程式的授權範圍。
 
 第三方工具與輸入 App 的權利完全獨立，見 `THIRD_PARTY_NOTICES.md`。
+
+新增的環境安裝／啟動腳本與測試有明示 MIT SPDX 標記，依 MIT-native-files.txt 使用；environment.lock.json 只是固定下載資料，不對工具本身授權。tool-licenses/android-sdk-license.txt 為 Google 原始 SDK 條款，未改標為 MIT。

@@ -63,12 +63,16 @@ def run_tool(command, **kwargs):
     return result
 
 def load_tools():
+    local = HOME/'.local-env/runtime'
+    def project_path(value):
+        p = Path(value).expanduser()
+        return (p if p.is_absolute() else HOME/p).resolve()
     config_path = HOME/'tools.local.json'
     config = json.loads(config_path.read_text()) if config_path.is_file() else {}
-    sdk_value = config.get('android_sdk') or os.environ.get('ANDROID_SDK_ROOT') or os.environ.get('ANDROID_HOME')
+    sdk_value = config.get('android_sdk') or os.environ.get('ANDROID_SDK_ROOT') or os.environ.get('ANDROID_HOME') or (str(local/'android-sdk') if (local/'android-sdk').is_dir() else None)
     if not sdk_value:
-        raise ValueError('請設定 ANDROID_SDK_ROOT 或 tools.local.json 的 android_sdk。')
-    sdk = Path(sdk_value).expanduser().resolve()
+        raise ValueError('請先執行「安裝本機環境.command」，或設定 tools.local.json 的 android_sdk。')
+    sdk = project_path(sdk_value)
     versions = [p for p in (sdk/'build-tools').iterdir() if p.is_dir()] if (sdk/'build-tools').is_dir() else []
     def version_key(p): return tuple(int(x) for x in re.findall(r'\d+',p.name))
     if config.get('build_tools_version'):
@@ -77,19 +81,21 @@ def load_tools():
         bt = max(versions,key=version_key)
     else:
         raise ValueError('Android SDK 未安裝 Build Tools。')
-    apktool_value = config.get('apktool') or os.environ.get('APKTOOL_PATH') or shutil.which('apktool')
+    apktool_value = config.get('apktool') or os.environ.get('APKTOOL_PATH') or (str(local/'apktool.jar') if (local/'apktool.jar').is_file() else None) or shutil.which('apktool')
     if not apktool_value:
         jar = HOME/'apktool-cli-2.11.1.jar'
         if jar.is_file(): apktool_value = str(jar)
         else: raise ValueError('請安裝 apktool，或在 tools.local.json 指定官方 JAR 路徑。')
-    tools = dict(apktool=Path(apktool_value).expanduser().resolve(), sdk=sdk,
+    tools = dict(apktool=project_path(apktool_value), sdk=sdk,
                  aapt2=bt/'aapt2', zipalign=bt/'zipalign', signer=bt/'lib/apksigner.jar')
     for name,path in tools.items():
         if not path.exists(): raise ValueError('缺少本機 Android 工具：'+name)
+    java_home = config.get('java_home') or (str(local/'jdk/Contents/Home') if (local/'jdk/Contents/Home').is_dir() else None) or os.environ.get('JAVA_HOME')
     for name in ['java','keytool']:
-        found = shutil.which(name)
+        found = str(project_path(java_home)/'bin'/name) if java_home else shutil.which(name)
         if not found: raise ValueError('缺少本機工具：'+name)
         tools[name] = Path(found)
+        if not tools[name].is_file(): raise ValueError('缺少本機工具：'+name)
     return tools
 
 def metadata(apk, tools):
@@ -142,6 +148,7 @@ def build(apk, count, output_parent=None):
         try: fcntl.flock(lock,fcntl.LOCK_EX|fcntl.LOCK_NB)
         except BlockingIOError: raise ValueError('另一個分身建置正在執行，請等它完成。')
         tools = load_tools()
+        os.environ['PATH'] = str(tools['java'].parent)+os.pathsep+os.environ.get('PATH','')
         base = metadata(apk, tools)
         rows = identities(base['package'],base['name'],base['code'],base['version'],count)
         parent = Path(output_parent).expanduser().resolve() if output_parent else HOME/'01-輸出'
