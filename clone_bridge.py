@@ -3,6 +3,7 @@
 """Local JSON-lines bridge for the unchanged APK clone engine."""
 import argparse, contextlib, fcntl, hashlib, importlib.util, io, json, os, re
 import secrets, shutil, signal, subprocess, sys, tempfile, zipfile
+from clone_profiles import rows_for, validate_profile, updated_profile, save_profile, merge_profiles
 from datetime import datetime
 from pathlib import Path
 sys.dont_write_bytecode = True
@@ -44,7 +45,7 @@ def secure_sign_args(command, password_file):
 def run_tool(command, **kwargs):
     child = subprocess.Popen([str(a) for a in command], cwd=kwargs.get('cwd'),
                              text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                             start_new_session=True)
+                             start_new_session=True, env=kwargs.get("env"))
     try:
         output, _ = child.communicate()
     except BaseException:
@@ -101,7 +102,7 @@ def load_tools():
 def metadata(apk, tools):
     text = run_tool([tools['aapt2'],'dump','badging',apk]).stdout
     match = re.search(r"package: name='([^']+)' versionCode='(\d+)' versionName='([^']*)'",text)
-    label = re.search(r"application-label:'(.*?)'",text) or re.search(r"application: label='(.*?)'",text)
+    label = re.search(r"(?m)^application-label:'(.*)'\r?$",text) or re.search(r"(?m)^application: label='(.*)' icon='",text)
     if not match: raise ValueError('無法讀取 APK 套件與版本。')
     return dict(package=match[1], code=int(match[2]), version=match[3], name=label[1] if label else match[1].rsplit('.',1)[-1])
 
@@ -117,6 +118,8 @@ def signing_identity(package, tools):
     key,password,alias = private/'local-clones.p12',private/'password.txt','local-clones'
     if key.exists() != password.exists():
         raise ValueError('一般 APK 的簽章資料不完整，請恢復 06-精靈私有簽章備份。')
+    if not key.exists() and (HOME/"07-分身設定").exists() and any((HOME/"07-分身設定").glob("*.json")):
+        raise ValueError("已有分身設定但原簽章遺失，不能改用新簽章。請找回06-精靈私有簽章。")
     if not key.exists():
         fd = os.open(password, os.O_CREAT|os.O_EXCL|os.O_WRONLY,0o600)
         with os.fdopen(fd,'w') as stream: stream.write(secrets.token_urlsafe(48)+'\n')
@@ -129,6 +132,96 @@ def signing_identity(package, tools):
             password.unlink(missing_ok=True); key.unlink(missing_ok=True); raise
     return key,password,alias
 
+def signing_digest(key, password, alias, tools):
+    if not key.is_file() or not password.is_file():
+        raise ValueError("找不到原有簽章檔，不能改用新簽章。請保留或找回原簽章資料。")
+    result=run_tool([tools['keytool'],'-exportcert','-rfc','-keystore',key,'-alias',alias,'-storepass:file',password]).stdout
+    import base64
+    pem=re.search(r'-----BEGIN CERTIFICATE-----(.*?)-----END CERTIFICATE-----',result,re.S)
+    if not pem: raise ValueError("無法確認原簽章身分。")
+    return hashlib.sha256(base64.b64decode(pem[1])).hexdigest()
+
+def key_paths(profile):
+    signing=profile['signing']
+    def resolve(value):
+        path=Path(value).expanduser()
+        return (path if path.is_absolute() else HOME/path).resolve()
+    return resolve(signing['keystore']),resolve(signing['password_file']),signing['alias']
+
+def profile_for(base, tools, selected=None):
+    folder=HOME/'07-分身設定'
+    default=folder/(base['package']+'.json')
+    path=Path(selected).expanduser().resolve() if selected else default
+    if path.is_file():
+        value=json.loads(path.read_text())
+        if value.get('schema')==1:
+            profile=validate_profile(value)
+        elif 'clones' in value and 'base_package' in value:
+            profile=import_summary(path,value,tools)
+            path=folder/(profile['source_package']+'.json')
+        else:raise ValueError("請選擇分身設定檔，或上次輸出中的clone-summary.json。")
+    elif selected:raise ValueError("選擇的分身設定不存在。")
+    else:
+        key,password,alias=signing_identity(base['package'],tools)
+        profile=dict(schema=1,source_package=base['package'],signing=dict(keystore=str(key.relative_to(HOME)),password_file=str(password.relative_to(HOME)),alias=alias),signer_sha256=signing_digest(key,password,alias,tools),slots={})
+    if profile['source_package']!=base['package']:
+        raise ValueError("這份分身設定屬於另一個App，已停止。請選擇同一原始App的更新檔，避免覆蓋錯誤的分身。")
+    canonical=folder/(profile['source_package']+'.json')
+    if canonical.is_file() and canonical.resolve()!=path.resolve():
+        profile=merge_profiles(validate_profile(json.loads(canonical.read_text())),profile)
+    elif canonical.is_file() and selected and value.get('schema')!=1:
+        profile=merge_profiles(validate_profile(json.loads(canonical.read_text())),profile)
+    path=canonical
+    key,password,alias=key_paths(profile)
+    actual=signing_digest(key,password,alias,tools)
+    if actual!=profile['signer_sha256']:
+        raise ValueError("這份簽章與原分身不一致，已停止製作；不會產生無法覆蓋的新簽章版本。")
+    return path,profile,key,password,alias
+
+def import_summary(path, summary, tools):
+    # Old GUI runs use the persistent wizard key. Old terminal runs may have
+    # generated a key next to clone-summary.json. Import only a verified match.
+    reports=summary['clones']
+    fingerprints=[];slots={}
+    for row in reports:
+        spec=row['spec']
+        match=re.search(r'Signer #1 certificate SHA-256 digest: (\S+)',row.get('signature_summary',''))
+        if not match:raise ValueError("舊輸出缺少簽章紀錄，不能猜測更新身分。")
+        candidate=(path.parent/spec['output_apk']).resolve()
+        if candidate.parent!=path.parent.resolve() or not candidate.is_file():
+            raise ValueError("上次輸出的APK不完整，不能核對原更新身分；請選完整輸出資料夾。")
+        if hashlib.sha256(candidate.read_bytes()).hexdigest()!=row.get('apk_sha256'):
+            raise ValueError("上次輸出的APK與紀錄不符，已停止。")
+        old=metadata(candidate,tools)
+        if old!=dict(package=spec['package_name'],name=spec['app_name'],code=spec['version_code'],version=spec['version_name']):
+            raise ValueError("上次分身的套件或版本與紀錄不符，已停止。")
+        actual=certificate(candidate,tools)
+        if actual!=match[1].lower():raise ValueError("上次分身的實際簽章與紀錄不符，已停止。")
+        fingerprints.append(actual)
+        slots[str(spec['number'])]=dict(package=spec['package_name'],name=spec['app_name'],last_version_code=spec['version_code'])
+    if len(set(fingerprints))!=1:raise ValueError("舊分身使用不同簽章，請分開載入設定。")
+    expected=fingerprints[0]
+    key=HOME/'06-精靈私有簽章/local-clones.p12';password=key.parent/'password.txt';alias='local-clones'
+    if not(key.is_file() and password.is_file() and signing_digest(key,password,alias,tools)==expected):
+        oldkey=path.parent/'apk-clone-test.jks'
+        if not oldkey.is_file():raise ValueError("找不到這批舊分身的原簽章；請找回原輸出中的簽章檔，不能用新簽章替代。")
+        # Only the engine's documented default credential is attempted.
+        env={**os.environ,'WIZARD_LEGACY_STORE_PASSWORD':'android'}
+        text=run_tool([tools['keytool'],'-exportcert','-rfc','-keystore',oldkey,'-alias','apkclone','-storepass:env','WIZARD_LEGACY_STORE_PASSWORD'],env=env).stdout
+        import base64
+        pem=re.search(r'-----BEGIN CERTIFICATE-----(.*?)-----END CERTIFICATE-----',text,re.S)
+        if not pem or hashlib.sha256(base64.b64decode(pem[1])).hexdigest()!=expected:raise ValueError("舊簽章與輸出不一致，已停止。")
+        private=HOME/'06-精靈私有簽章/匯入';private.mkdir(parents=True,exist_ok=True,mode=0o700)
+        key=private/(expected+'.jks');password=private/(expected+'.password');alias='apkclone'
+        if key.exists() and hashlib.sha256(key.read_bytes()).digest()!=hashlib.sha256(oldkey.read_bytes()).digest():raise ValueError("已有不同的匯入簽章，請人工確認。")
+        if not key.exists():
+            shutil.copy2(oldkey,key);key.chmod(0o600)
+        if not password.exists():
+            fd=os.open(password,os.O_WRONLY|os.O_CREAT|os.O_EXCL,0o600)
+            with os.fdopen(fd,'w') as stream:stream.write('android'+chr(10))
+    value=dict(schema=1,source_package=summary['base_package'],signing=dict(keystore=str(key.relative_to(HOME)),password_file=str(password.relative_to(HOME)),alias=alias),signer_sha256=expected,slots=slots)
+    return validate_profile(value)
+
 class EngineMessages(io.TextIOBase):
     def write(self, value):
         for line in value.splitlines():
@@ -140,7 +233,18 @@ class EngineMessages(io.TextIOBase):
         return len(value)
     def flush(self): pass
 
-def build(apk, count, output_parent=None):
+def build(apk, count, output_parent=None, start_number=1, names=None, profile_file=None):
+    old_env={key:os.environ.get(key) for key in ('PATH','TMPDIR')}
+    old_temp=tempfile.tempdir
+    try:
+        return _build(apk,count,output_parent,start_number,names,profile_file)
+    finally:
+        tempfile.tempdir=old_temp
+        for key,value in old_env.items():
+            if value is None:os.environ.pop(key,None)
+            else:os.environ[key]=value
+
+def _build(apk, count, output_parent=None, start_number=1, names=None, profile_file=None):
     apk = validate_apk(apk)
     cache = HOME/'03-精靈快取'
     cache.mkdir(exist_ok=True)
@@ -150,15 +254,17 @@ def build(apk, count, output_parent=None):
         tools = load_tools()
         os.environ['PATH'] = str(tools['java'].parent)+os.pathsep+os.environ.get('PATH','')
         base = metadata(apk, tools)
-        rows = identities(base['package'],base['name'],base['code'],base['version'],count)
+        profile_path,profile,key,password,alias = profile_for(base,tools,profile_file)
+        rows = rows_for(base,count,start_number,names,profile)
+        pending_profile = updated_profile(profile,rows)
         parent = Path(output_parent).expanduser().resolve() if output_parent else HOME/'01-輸出'
         # Always create a new run folder; never replace released APKs.
         parent.mkdir(parents=True, exist_ok=True)
         stem = re.sub(r'[/:\\\x00]','_',base['name'])[:70] or 'App'
         destination = parent/(stem+'-'+datetime.now().strftime('%Y%m%d-%H%M%S-%f'))
         destination.mkdir(exist_ok=False)
-        key,password,alias = signing_identity(base['package'], tools)
         temp = cache/('temp-'+destination.name); temp.mkdir()
+        plan = temp/'clone-plan.json';plan.write_text(json.dumps(rows,ensure_ascii=False,indent=2))
         os.environ['TMPDIR'] = str(temp); tempfile.tempdir = str(temp)
         spec = importlib.util.spec_from_file_location('clone_engine', HOME/'apk_clone_maker.py')
         engine = importlib.util.module_from_spec(spec); sys.modules[spec.name]=engine; spec.loader.exec_module(engine)
@@ -179,7 +285,8 @@ def build(apk, count, output_parent=None):
         engine.run = secure_run
         # Existing engine remains untouched. Defaults are overwritten explicitly.
         argv = [str(HOME/'apk_clone_maker.py'),'--apk',str(apk),'--output-dir',str(destination),
-                '--numbers',','.join(str(i) for i in range(1,count+1)),
+                '--numbers',','.join(str(row['number']) for row in rows),
+                '--clone-plan',str(plan),
                 '--name-template','{base_name}{n}',
                 '--package-template',base['package']+'clone{n}',
                 '--version-name-template','{base_version_name}', '--filename-template','{name}-{base_version_name}.apk',
@@ -187,6 +294,8 @@ def build(apk, count, output_parent=None):
                 '--aapt2',str(tools['aapt2']), '--zipalign',str(tools['zipalign']), '--apksigner',str(tools['signer']),
                 '--keystore',str(key),'--ks-alias',alias]
         previous = sys.argv
+        committed = False
+        commit_started = False
         try:
             event('started','正在製作 '+str(count)+' 個分身', output=str(destination), base=base)
             sys.argv = argv
@@ -199,14 +308,32 @@ def build(apk, count, output_parent=None):
                 result = metadata(p,tools)
                 if result != dict(package=row['package'],name=row['name'],code=row['version_code'],version=row['version_name']):
                     raise ValueError('建置後的名稱、套件或版本不符。')
+                if certificate(p,tools)!=profile['signer_sha256']:raise ValueError('成品簽章與原分身設定不符。')
                 if report['warnings']: raise ValueError('APK 結構需要人工檢查：'+'; '.join(report['warnings']))
                 if engine.sha256_file(p) != report['apk_sha256']: raise ValueError('APK 檔案校驗失敗。')
             (destination/'SHA256SUMS.txt').write_text(''.join(r['apk_sha256']+'  '+r['spec']['output_apk']+'\n' for r in summary['clones']))
+            summary['profile_file']=str(profile_path)
+            summary['signer_sha256']=profile['signer_sha256']
+            summary['update_identity']='persistent per-slot package and signer; monotonically increasing versionCode'
             summary['bridge_validation'] = 'ZIP, alignment, metadata, signature; runtime not tested'
             (destination/'clone-summary.json').write_text(json.dumps(summary,ensure_ascii=False,indent=2)+'\n')
-            event('done','完成 '+str(count)+' 個分身',output=str(destination),clones=rows)
+            commit_started = True
+            save_profile(profile_path,pending_profile)
+            committed = True
+            event('done','完成 '+str(count)+' 個分身',output=str(destination),clones=rows,profile=str(profile_path))
             return destination
         except BaseException as error:
+            if commit_started and not committed:
+                # Cancellation may land after replace() but before save_profile
+                # returns. Re-read the commit rather than deleting its APKs.
+                try:committed = json.loads(profile_path.read_text()) == pending_profile
+                except (OSError, ValueError):
+                    # Unable to prove the old state: retain verified outputs for recovery.
+                    committed = True
+            if committed:
+                # The completed APKs and canonical settings remain a consistent pair
+                # even if the UI pipe closes after the final commit.
+                raise
             for p in destination.glob('*.apk'): p.unlink()
             (destination/'build-error.json').write_text(json.dumps(dict(error=str(error) or type(error).__name__,input_apk=str(apk),status='failed; candidate APKs removed'),ensure_ascii=False,indent=2)+'\n')
             raise
@@ -222,8 +349,11 @@ def main():
     parser.add_argument('--apk',required=True,type=Path)
     parser.add_argument('--count',required=True,type=int)
     parser.add_argument('--output-parent',type=Path)
+    parser.add_argument('--start-number',type=int,default=1)
+    parser.add_argument('--names-json',default='[]')
+    parser.add_argument('--profile',type=Path)
     args = parser.parse_args()
-    try: build(args.apk,args.count,args.output_parent)
+    try: build(args.apk,args.count,args.output_parent,args.start_number,json.loads(args.names_json),args.profile)
     except KeyboardInterrupt:
         event('error','建置已停止，暫存已清除。'); return 130
     except Exception as error:

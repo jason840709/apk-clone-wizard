@@ -278,32 +278,32 @@ def relocate_smali_package(project: Path, old_package: str, new_package: str) ->
 
 
 def update_all_app_names(project: Path, app_name: str) -> int:
-    count = 0
-    label_name = resolve_label_string_name(project)
-    # label_name 是 manifest 裡 android:label 實際引用的字串資源名稱（例如
-    # app_name 或 launcher_name 等自訂名稱）。同時保留對 app_name 本身的
-    # 更新，因為就算它不是桌面顯示名稱的來源，它仍是 Android 生態系裡最常
-    # 被其他地方（例如系統設定裡的 App 名稱、部分第三方元件）引用的慣例
-    # 資源，一併更新可以避免其他地方顯示不一致的舊名字。
-    names_to_update = {label_name, "app_name"}
-    res = project / "res"
-    for name in names_to_update:
-        pattern = re.compile(rf'(<string\s+name="{re.escape(name)}"[^>]*>)(.*?)(</string>)', re.DOTALL)
-        for strings in sorted(res.glob("values*/strings.xml")):
-            text = strings.read_text(encoding="utf-8")
-            new_text, n = pattern.subn(lambda m: m.group(1) + escape_xml_text(app_name) + m.group(3), text, count=1)
-            if n:
-                strings.write_text(new_text, encoding="utf-8")
-                count += 1
-    if count == 0:
-        manifest = project / "AndroidManifest.xml"
-        text = manifest.read_text(encoding="utf-8")
-        new_text, n = re.subn(r"(<application\b[^>]*\bandroid:label=)\"[^\"]*\"",
-                              lambda m: m.group(1) + '"' + escape_xml_text(app_name) + '"', text, count=1)
-        if n:
-            manifest.write_text(new_text, encoding="utf-8")
-            count = 1
-    return count
+    import xml.etree.ElementTree as ET
+    namespace = "http://schemas.android.com/apk/res/android"
+    key = "{"+namespace+"}"
+    ET.register_namespace("android",namespace)
+    manifest=project/"AndroidManifest.xml"
+    tree=ET.parse(manifest);app=tree.getroot().find("application")
+    label=app.get(key+"label", "")
+    labels={"app_name"}
+    if label.startswith("@string/"): labels.add(label.split("/",1)[1])
+    # Quote the Android string value as well as XML-escaping it: apostrophes,
+    # braces, ampersands and percent signs are user text, never templates.
+    slash=chr(92)
+    value='"'+app_name.replace(slash,slash+slash).replace('"',slash+'"').replace("'",slash+"'")+'"'
+    count=0
+    for path in sorted((project/"res").glob("values*/strings.xml")):
+        strings=ET.parse(path);touched=False
+        for node in strings.getroot():
+            if node.tag=="string" and node.get("name") in labels:
+                node.text=value;node.set("formatted","false");touched=True;count+=1
+        if touched:strings.write(path,encoding="utf-8",xml_declaration=True)
+    if not label.startswith("@string/") or count==0:app.set(key+"label",app_name)
+    for component in list(app.findall("activity"))+list(app.findall("activity-alias")):
+        launch=any(any(c.get(key+"name")=="android.intent.category.LAUNCHER" for c in intent.findall("category")) for intent in component.findall("intent-filter"))
+        if launch and component.get(key+"label") is not None:component.set(key+"label",app_name)
+    tree.write(manifest,encoding="utf-8",xml_declaration=True)
+    return max(1,count)
 
 
 def escape_xml_text(value: str) -> str:
@@ -413,6 +413,7 @@ def main() -> int:
     parser.add_argument("--apk", required=True, help="Input APK")
     parser.add_argument("--output-dir", required=True, help="Output directory")
     parser.add_argument("--numbers", default="1,2,3,4", help="Comma-separated clone numbers")
+    parser.add_argument("--clone-plan", type=Path, help="Validated per-slot plan from clone_bridge")
     parser.add_argument("--name-template", default="{base_name}{n}", help="Launcher name template")
     parser.add_argument("--package-template", default="{old_package}.clone{n}", help="Package template")
     parser.add_argument("--version-name-template", default="{base_version_name}-clone{n}")
@@ -488,26 +489,44 @@ def main() -> int:
     extra_templates = [parse_replace_arg(x) for x in args.replace]
 
     specs: list[CloneSpec] = []
-    for pos, number in enumerate(numbers):
-        package_name = expand_template(args.package_template, number=number, app_name="", package="",
+    if args.clone_plan:
+        plan = json.loads(args.clone_plan.read_text())
+        if not isinstance(plan, list) or len(plan) != len(numbers): raise CloneError("Invalid clone plan")
+        for row, number in zip(plan, numbers):
+            if row.get("number") != number or not PACKAGE_RE.fullmatch(row.get("package", "")):
+                raise CloneError("Clone plan identity does not match requested slots")
+            if type(row.get("version_code")) is not int or not 1 <= row["version_code"] <= 2100000000:
+                raise CloneError("Invalid clone plan version code")
+            name = row.get("name", "")
+            if not isinstance(name, str) or not name.strip() or any(ord(c)<32 for c in name):
+                raise CloneError("Invalid clone plan label")
+            safe = re.sub(r'[\x00-\x1f/\\:*?"<>|]', '_', name)[:80].strip('. ') or 'App'
+            version = str(row["version_name"])
+            safe_version = re.sub(r'[/\\:*?"<>|\x00-\x1f]', '_', version)[:60]
+            filename = f"{safe}-{number}-{safe_version}.apk"
+            specs.append(CloneSpec(number, name, row["package"], row["version_code"], version, filename))
+    else:
+        for pos, number in enumerate(numbers):
+            package_name = expand_template(args.package_template, number=number, app_name="", package="",
+                                           old_package=old_package, base_name=base_name,
+                                           base_version_name=base_version_name)
+            if not PACKAGE_RE.fullmatch(package_name):
+                raise CloneError(f"Invalid package name generated for clone {number}: {package_name}")
+            app_name = expand_template(args.name_template, number=number, app_name="", package=package_name,
                                        old_package=old_package, base_name=base_name,
                                        base_version_name=base_version_name)
-        if not PACKAGE_RE.fullmatch(package_name):
-            raise CloneError(f"Invalid package name generated for clone {number}: {package_name}")
-        app_name = expand_template(args.name_template, number=number, app_name="", package=package_name,
-                                   old_package=old_package, base_name=base_name,
-                                   base_version_name=base_version_name)
-        version_code = (args.version_code_base if args.version_code_base is not None else base_version_code + 1) + pos
-        version_name = expand_template(args.version_name_template, number=number, app_name=app_name,
+            version_code = (args.version_code_base if args.version_code_base is not None else base_version_code + 1) + pos
+            version_name = expand_template(args.version_name_template, number=number, app_name=app_name,
+                                           package=package_name, old_package=old_package,
+                                           base_name=base_name, base_version_name=base_version_name)
+            filename = expand_template(args.filename_template, number=number, app_name=app_name,
                                        package=package_name, old_package=old_package,
                                        base_name=base_name, base_version_name=base_version_name)
-        filename = expand_template(args.filename_template, number=number, app_name=app_name,
-                                   package=package_name, old_package=old_package,
-                                   base_name=base_name, base_version_name=base_version_name)
-        filename = filename.replace(os.sep, "_")
-        if not filename.lower().endswith(".apk"):
-            filename += ".apk"
-        specs.append(CloneSpec(number, app_name, package_name, version_code, version_name, filename))
+            filename = filename.replace(os.sep, "_")
+            if not filename.lower().endswith(".apk"):
+                filename += ".apk"
+            specs.append(CloneSpec(number, app_name, package_name, version_code, version_name, filename))
+
 
     reports: list[CloneReport] = []
     for spec in specs:

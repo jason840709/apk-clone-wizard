@@ -34,3 +34,6 @@ dist/
 
 # Folder-local third-party runtimes and downloads
 .local-env/
+
+# Persistent clone identities contain private signing references.
+07-分身設定/
